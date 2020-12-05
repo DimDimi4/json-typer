@@ -1,11 +1,12 @@
 import { Command } from '@oclif/command';
 import * as write from 'write';
+import * as path from 'path';
 import * as fs from 'fs';
 import * as util from 'util';
 import * as Handlebars from 'handlebars';
 import { JSONSchema7Definition, JSONSchema7 } from 'json-schema';
 
-import { StructType, EnumType, Property, TplHelper, PropType } from './interfaces';
+import { Property, Enum, TplHelper, PropType, LangGenerator, StructType } from './interfaces';
 
 const readFile = util.promisify(fs.readFile);
 
@@ -14,113 +15,137 @@ export type GeneratorOptions = {
     cli: Command;
 };
 
-export class BaseGenerator {
-    private externals: string[] = [];
+interface propDefs {
+    [k: string]: JSONSchema7Definition;
+}
+
+export class BaseGenerator implements LangGenerator {
     protected structs: StructType[] = [];
-    protected enums: EnumType[] = [];
+    protected template: string = '';
 
-    protected tpl: string = '';
+    private externals: string[] = [];
 
-    private definitions: { [key: string]: JSONSchema7Definition };
-    private cli: Command;
+    protected definitions: { [key: string]: JSONSchema7Definition };
+    protected cli: Command;
 
     constructor(options: GeneratorOptions) {
         this.definitions = options.definitions;
         this.cli = options.cli;
 
         this.setupTplHelpers();
-
         this.prepareTypes();
     }
 
     private setupTplHelpers() {
         const that = this;
+
+        Handlebars.registerHelper('not', (obj) => !obj);
+
         for (const helper in TplHelper) {
             if (typeof helper === 'string') {
-                Handlebars.registerHelper(helper, (str) =>
+                Handlebars.registerHelper(helper, (str: any) =>
                     that.resolveTplHelper(TplHelper[helper as keyof typeof TplHelper], str),
                 );
             }
         }
     }
 
-    protected resolveTplHelper(_: TplHelper, str: string): string {
-        return str;
+    protected resolveTplHelper(helper: TplHelper, str: any): string {
+        switch (helper) {
+            default:
+                return str;
+        }
+    }
+
+    private prepareTypes() {
+        for (const name in this.definitions) {
+            const def = this.definitions[name] as JSONSchema7;
+
+            // for now we only working with 'object' definitions
+            if (def.type !== PropType.object) {
+                this.cli.warn(`Unknown type "${def.type}" for definition "${name}"`);
+                continue;
+            }
+
+            if (!def.properties) {
+                this.cli.warn(`Definition "${name}" has no properties`);
+                continue;
+            }
+
+            this.structs.push({
+                name,
+                description: def.description,
+                properties: this.prepareProperties(def.properties, def.required || [], name),
+                enums: this.prepareEnums(def.properties, name),
+            });
+        }
+    }
+
+    private prepareProperties(
+        propDefs: propDefs,
+        required: string[],
+        typeName: string,
+    ): Property[] {
+        const properties: Property[] = [];
+
+        for (const name in propDefs) {
+            const propDef = propDefs[name] as JSONSchema7;
+
+            const property: Property = {
+                name: name,
+                type: PropType[propDef.type as keyof typeof PropType],
+                description: propDef.description,
+                format: propDef.format,
+                isRequired: required.includes(name),
+            };
+
+            if (propDef.$ref) {
+                const refParts = propDef.$ref.split('/');
+                property.ref = refParts[refParts.length - 1];
+            }
+
+            if (propDef.enum) {
+                property.enum = `${typeName}_${name}`;
+            }
+
+            if (propDef.additionalProperties) {
+                const addProp = propDef.additionalProperties as JSONSchema7;
+                property.additionalPropertyType = addProp.type as string;
+            }
+
+            this.checkForExternals(property);
+
+            properties.push(property);
+        }
+
+        return properties;
+    }
+
+    protected checkForExternals(prop: Property): void {}
+
+    private prepareEnums(propDefs: propDefs, typeName: string): Enum[] {
+        const enums: Enum[] = [];
+
+        for (const name in propDefs) {
+            const propDef = propDefs[name] as JSONSchema7;
+
+            if (!propDef.enum) continue;
+
+            enums.push({
+                name: `${typeName}_${name}`,
+                values: propDef.enum as string[],
+            });
+        }
+
+        return enums;
     }
 
     protected addToExternals(external: string) {
         if (!this.externals.includes(external)) this.externals.push(external);
     }
 
-    private refType(ref: string) {
-        const parts = ref.split('/');
-        return parts[parts.length - 1];
-    }
-
-    protected resolvePropType(_: PropType, prop: JSONSchema7): string {
-        return prop.type as string;
-    }
-
-    protected getPropType(prop: JSONSchema7): string {
-        return prop['$ref']
-            ? this.refType(prop['$ref'])
-            : this.resolvePropType(PropType[prop.type as keyof typeof PropType], prop);
-    }
-
-    private prepareStruct(typeName: string, def: JSONSchema7) {
-        if (!def.properties) {
-            return this.cli.warn(`Definition "${typeName}" has no properties`);
-        }
-
-        const properties: Property[] = [];
-
-        for (let propName in def.properties) {
-            const prop = def.properties[propName] as JSONSchema7;
-
-            if (prop.enum) {
-                const enumName = `${typeName}_${propName}`;
-                prop.$ref = '/enum/' + enumName;
-                this.enums.push({
-                    name: enumName,
-                    values: prop.enum as string[],
-                });
-            }
-
-            const property: Property = {
-                name: propName,
-                description: prop.description,
-                type: this.getPropType(prop),
-                required: def.required?.includes(propName) || false,
-                format: prop.format,
-            };
-
-            if (prop.additionalProperties) {
-                property.additionalProperty = this.getPropType(
-                    prop.additionalProperties as JSONSchema7,
-                );
-            }
-
-            properties.push(property);
-        }
-
-        this.structs.push({
-            name: typeName,
-            description: def.description,
-            properties,
-        });
-    }
-
-    private prepareTypes() {
-        Object.keys(this.definitions).forEach((typeName) => {
-            const def = this.definitions[typeName] as JSONSchema7;
-            // for now we only working with 'object' definitions
-            if (def.type === PropType.object) this.prepareStruct(typeName, def);
-            else this.cli.warn(`Unknown type "${def.type}" for definition "${typeName}"`);
-        });
-    }
-
     async readTpl() {
-        return readFile(this.tpl, 'utf8');
+        return readFile(path.join(__dirname, 'templates', this.template), 'utf8');
     }
 
     async compileTpl() {
@@ -129,7 +154,6 @@ export class BaseGenerator {
             date: new Date(),
             externals: this.externals,
             structs: this.structs,
-            enums: this.enums,
         });
     }
 

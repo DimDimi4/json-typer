@@ -1,27 +1,28 @@
-import { JSONSchema7 } from 'json-schema';
-
 export interface LangGenerator {
     generate(outputPath: string): void;
 }
 
 export interface Property {
     name: string;
+    type?: PropType | undefined;
     description?: string;
-    type: string;
-    required: boolean;
     format?: string;
-    additionalProperty?: string;
+    ref?: string;
+    enum?: string;
+    additionalPropertyType?: string;
+    isRequired: boolean;
+}
+
+export interface Enum {
+    name: string;
+    values: string[];
 }
 
 export interface StructType {
     name: string;
     description?: string;
     properties: Property[];
-}
-
-export interface EnumType {
-    name: string;
-    values: string[];
+    enums?: Enum[];
 }
 
 export enum TplHelper {

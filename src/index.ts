@@ -32,39 +32,43 @@ class JsonTyper extends Command {
     };
 
     async run() {
-        const { flags } = this.parse(JsonTyper);
+        try {
+            const { flags } = this.parse(JsonTyper);
 
-        const spec: JSONSchema7 = await jsonfile.readFile(flags.spec);
+            const spec: JSONSchema7 = await jsonfile.readFile(flags.spec);
 
-        if (!spec.definitions) {
-            return this.error('missing property "definitions" in spec file');
+            if (!spec.definitions) {
+                return this.error('missing property "definitions" in spec file');
+            }
+
+            if (Object.keys(spec.definitions).length == 0) {
+                return this.error('property "definitions" is empty');
+            }
+
+            let langGenerator: LangGenerator;
+
+            switch (flags.language) {
+                case 'golang':
+                    langGenerator = new Golang({
+                        definitions: spec.definitions,
+                        cli: this,
+                    });
+                    break;
+                case 'rust':
+                    langGenerator = new Rust({
+                        definitions: spec.definitions,
+                        cli: this,
+                    });
+                    break;
+
+                default:
+                    this.error('Language not supported');
+            }
+
+            await langGenerator.generate(flags.output);
+        } catch (error) {
+            console.dir(error);
         }
-
-        if (Object.keys(spec.definitions).length == 0) {
-            return this.error('property "definitions" is empty');
-        }
-
-        let langGenerator: LangGenerator;
-
-        switch (flags.language) {
-            case 'golang':
-                langGenerator = new Golang({
-                    definitions: spec.definitions,
-                    cli: this,
-                });
-                break;
-            case 'rust':
-                langGenerator = new Rust({
-                    definitions: spec.definitions,
-                    cli: this,
-                });
-                break;
-
-            default:
-                this.error('Language not supported');
-        }
-
-        await langGenerator.generate(flags.output);
     }
 }
 
